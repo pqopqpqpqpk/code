@@ -1,97 +1,72 @@
-import sys
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QFileDialog, QLabel, QSlider
-from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QPixmap, QImage
+#################################################
+#                                               #
+#   python -m pip install opencv-python numpy   #
+#                                               #
+#################################################
 import cv2
 import numpy as np
+import random
+import os
 
-class KeyframeEditor(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("키프레임 영상 편집기")
-        self.setGeometry(100, 100, 800, 600)
+input_file = '' # Your mp4 file
+output_file = f"vhs_{os.path.splitext(input_file)[0]}.mp4"
 
-        self.layout = QVBoxLayout()
-        self.setLayout(self.layout)
+cap = cv2.VideoCapture(input_file)
+fps = cap.get(cv2.CAP_PROP_FPS)
+# fps = 15
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        self.label = QLabel("영상 없음")
-        self.layout.addWidget(self.label)
+scale = 0.6
+new_width = int(width * scale)
+new_height = int(height * scale)
 
-        self.load_btn = QPushButton("영상 불러오기")
-        self.load_btn.clicked.connect(self.load_video)
-        self.layout.addWidget(self.load_btn)
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+out = cv2.VideoWriter(output_file, fourcc, fps, (new_width, new_height))
 
-        self.add_kf_btn = QPushButton("키프레임 추가")
-        self.add_kf_btn.clicked.connect(self.add_keyframe)
-        self.layout.addWidget(self.add_kf_btn)
+dy = 2
+frame_count = 0
 
-        self.slider = QSlider()
-        self.slider.setOrientation(1)  # Horizontal
-        self.layout.addWidget(self.slider)
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
 
-        self.play_btn = QPushButton("재생")
-        self.play_btn.clicked.connect(self.play_video)
-        self.layout.addWidget(self.play_btn)
+    #shaky
+    if frame_count % 2 == 0:
+        M = np.float32([[1, 0, 0], [0, 1, dy]])
+    else:
+        M = np.float32([[1, 0, 0], [0, 1, -dy]])
+    frame = cv2.warpAffine(frame, M, (width, height))
 
-        self.cap = None
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.next_frame)
-        self.frame_pos = 0
-        self.frames = []
-        self.keyframes = {}  # frame_number : {'x':0, 'y':0}
+    #down quality
+    frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
 
-    def load_video(self):
-        fname, _ = QFileDialog.getOpenFileName(self, "영상 선택", "", "Video Files (*.mp4 *.avi)")
-        if fname:
-            self.cap = cv2.VideoCapture(fname)
-            self.frames = []
-            while True:
-                ret, frame = self.cap.read()
-                if not ret:
-                    break
-                self.frames.append(frame)
-            self.slider.setMaximum(len(self.frames)-1)
-            self.label.setText("영상 불러옴")
+    #VHS nosie
+    noise = np.random.randint(0, 50, (new_height, new_width, 1), dtype=np.uint8)
+    noise = np.repeat(noise, 3, axis=2)
+    frame = cv2.add(frame, noise)
 
-    def add_keyframe(self):
-        # 현재 슬라이더 위치의 키프레임 추가 (예: x, y 이동)
-        frame_num = self.slider.value()
-        x = 0
-        y = 0
-        # 예시: y 위치를 2픽셀 떨림 효과
-        y = 2 if frame_num % 2 == 0 else -2
-        self.keyframes[frame_num] = {'x': x, 'y': y}
-        self.label.setText(f"키프레임 추가: {frame_num}")
+    #RGB smearing
+    b, g, r = cv2.split(frame)
+    shift_val = random.randint(-2, 2)
+    b = np.roll(b, shift_val, axis=1)
+    g = np.roll(g, -shift_val, axis=0)
+    r = np.roll(r, shift_val, axis=0)
+    frame = cv2.merge([b, g, r])
 
-    def play_video(self):
-        self.frame_pos = 0
-        self.timer.start(30)  # FPS 조절 가능
+    #horizontal line
+    if random.random() < 0.1:
+        y1 = random.randint(0, new_height - 2)
+        thickness = random.randint(1, 3)
+        frame[y1:y1+thickness, :] = frame[y1:y1+thickness, :] * 0.5 + np.random.randint(0, 128, (thickness, new_width, 3), dtype=np.uint8) * 0.5
 
-    def next_frame(self):
-        if self.frame_pos >= len(self.frames):
-            self.timer.stop()
-            return
+    #blur
+    frame = cv2.GaussianBlur(frame, (3, 3), 0)
 
-        frame = self.frames[self.frame_pos].copy()
+    out.write(frame)
+    frame_count += 1
 
-        # 키프레임 적용 (보간 없이 단순 적용)
-        if self.frame_pos in self.keyframes:
-            kf = self.keyframes[self.frame_pos]
-            M = np.float32([[1, 0, kf['x']], [0, 1, kf['y']]])
-            frame = cv2.warpAffine(frame, M, (frame.shape[1], frame.shape[0]))
-
-        # OpenCV -> QImage 변환
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = frame.shape
-        bytes_per_line = ch * w
-        qimg = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(qimg)
-        self.label.setPixmap(pixmap.scaled(self.label.width(), self.label.height()))
-
-        self.frame_pos += 1
-        self.slider.setValue(self.frame_pos)
-
-app = QApplication(sys.argv)
-editor = KeyframeEditor()
-editor.show()
-sys.exit(app.exec())
+cap.release()
+out.release()
+cv2.destroyAllWindows()
